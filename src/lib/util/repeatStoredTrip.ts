@@ -96,7 +96,6 @@ const tripHandlers = {
 		commandName: 'clue',
 		args: (data: ClueActivityTaskOptions) => ({
 			tier: data.ci,
-			quantity: data.q,
 			implings: data.implingID ? getOSItem(data.implingID!).name : undefined
 		})
 	},

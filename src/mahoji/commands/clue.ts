@@ -1,7 +1,7 @@
 import type { CommandResponse, CommandRunOptions } from '@oldschoolgg/toolkit/util';
 import type { PlayerOwnedHouse } from '@prisma/client';
 import { ApplicationCommandOptionType } from 'discord.js';
-import { Time, notEmpty, randInt } from 'e';
+import { Time, clamp, notEmpty, randInt } from 'e';
 import { Bank, type ItemBank } from 'oldschooljs';
 
 import type { ClueTier } from '../../lib/clues/clueTiers';
@@ -252,13 +252,6 @@ export const clueCommand: OSBMahojiCommand = {
 			}
 		},
 		{
-			type: ApplicationCommandOptionType.Integer,
-			name: 'quantity',
-			description: 'The quantity of clues you want to complete (optional).',
-			required: false,
-			min_value: 1
-		},
-		{
 			type: ApplicationCommandOptionType.String,
 			name: 'implings',
 			description: 'Implings to use for multiple clues per trip.',
@@ -278,20 +271,13 @@ export const clueCommand: OSBMahojiCommand = {
 			}
 		}
 	],
-	run: async ({
-		options,
-		userID,
-		channelID
-	}: CommandRunOptions<{ tier: string; quantity?: number; implings?: string }>) => {
+	run: async ({ options, userID, channelID }: CommandRunOptions<{ tier: string; implings?: string }>) => {
 		const user = await mUserFetch(userID);
-		let { quantity } = options;
 
 		const clueTier = ClueTiers.find(
 			tier => stringMatches(tier.id.toString(), options.tier) || stringMatches(tier.name, options.tier)
 		);
 		if (!clueTier) return 'Invalid clue tier.';
-
-		const maxTripLength = calcMaxTripLength(user, 'ClueCompletion');
 
 		const clueImpling = options.implings
 			? getItem(/^[0-9]+$/.test(options.implings) ? Number(options.implings) : options.implings)
@@ -319,6 +305,8 @@ export const clueCommand: OSBMahojiCommand = {
 			timePerClue *= 1 - learningReductionPercent / 100;
 			boosts.push(`${learningReductionPercent}% for Clue score`);
 		}
+
+		const maxTripLength = calcMaxTripLength(user, 'ClueCompletion');
 
 		const randomAddedDuration = randInt(1, 20);
 		timePerClue += (randomAddedDuration * timePerClue) / 100;
@@ -361,31 +349,26 @@ export const clueCommand: OSBMahojiCommand = {
 				timePerClue *= durationMultiplier;
 			}
 		}
-
+		let quantity = clamp(user.bank.amount(clueTier.scrollID), 1, Math.floor(maxTripLength / timePerClue));
 		const maxCanDo = Math.floor(maxTripLength / timePerClue);
-		quantity = quantity ?? maxCanDo;
-
 		const response: Awaited<CommandResponse> = {};
 
 		let implingLootString = '';
 		let implingClues = 0;
-		const bankedClues = user.bank.amount(clueTier.scrollID);
-
-		let cluesDone = 0;
-		if (!clueImpling || bankedClues > 0) {
-			const cost = new Bank().add(clueTier.scrollID, bankedClues);
+		if (!clueImpling || quantity > 1) {
+			const cost = new Bank().add(clueTier.scrollID, quantity);
 			if (!user.owns(cost)) return `You don't own ${cost}.`;
-			await user.removeItemsFromBank(new Bank().add(clueTier.scrollID, bankedClues));
-			cluesDone = bankedClues;
+			await user.removeItemsFromBank(new Bank().add(clueTier.scrollID, quantity));
 		} else {
 			const implingJarOpenable = allOpenables.find(o => o.aliases.some(a => stringMatches(a, clueImpling.name)));
 			// If this triggers, it means OSJS probably broke / is missing an alias for an impling jar:
 			if (!implingJarOpenable) return 'Invalid impling jar.';
 
+			const bankedClues = user.bank.amount(clueTier.scrollID);
 			const bankedImplings = user.bank.amount(clueImpling.id);
 			let openedImplings = 0;
 			const implingLoot = new Bank();
-			while (implingClues + bankedClues < quantity && openedImplings < bankedImplings) {
+			while (implingClues + bankedClues < maxCanDo && openedImplings < bankedImplings) {
 				const impLoot = await getOpenableLoot({ openable: implingJarOpenable, user, quantity: 1 });
 				implingLoot.add(impLoot.bank);
 				implingClues = implingLoot.amount(clueTier.scrollID);
@@ -421,8 +404,6 @@ export const clueCommand: OSBMahojiCommand = {
 			implingLootString = `\n\nYou will find ${implingClues} clue${
 				implingClues === 0 || implingClues > 1 ? 's' : ''
 			} from ${openedImplings}x ${clueImpling.name}s.`;
-
-			cluesDone = quantity;
 		}
 
 		const duration = timePerClue * quantity;
@@ -443,9 +424,9 @@ export const clueCommand: OSBMahojiCommand = {
 			type: 'ClueCompletion'
 		});
 
-		response.content = `${user.minionName} is now completing ${cluesDone}x ${
+		response.content = `${user.minionName} is now completing ${quantity}x ${
 			clueTier.name
-		} clues, it'll take around ${formatDuration(duration)} to finish (${((cluesDone / duration) * 3600000).toFixed(1)}/hr).${
+		} clues, it'll take around ${formatDuration(duration)} to finish (${((quantity / duration) * 3600000).toFixed(1)}/hr).${
 			boosts.length > 0 ? `\n\n**Boosts:** ${boosts.join(', ')}.` : ''
 		}${implingLootString}`;
 		return response;
